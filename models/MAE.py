@@ -441,7 +441,7 @@ class MaskedAutoencoderViT(pl.LightningModule):
         spec_keep = ~token_mask
         img_keep = ~token_mask_img
 
-        # Canonical MAE behavior: drop masked tokens before encoder blocks.
+        # Canonical MAE behavior
         s = s[:, spec_keep, :]
         e = e[:, spec_keep, :]
         img = img[:, img_keep, :]
