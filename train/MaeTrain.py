@@ -17,8 +17,6 @@ from utils.DataProcessing import CreateMultimodalDataLoadersIter
 if __name__ == "__main__":
     seed_everything(130, workers=True)
 
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
     if hasattr(torch.backends, "cuda"):
         if hasattr(torch.backends.cuda, "enable_flash_sdp"):
             torch.backends.cuda.enable_flash_sdp(True)
@@ -36,7 +34,7 @@ if __name__ == "__main__":
     checkpoint_callback = ModelCheckpoint(
         save_top_k=-1,
         every_n_epochs=1,
-        dirpath=os.path.join(os.environ["SCRATCH"], "DESIMAE/Final"),
+        dirpath=os.path.join(os.environ["SCRATCH"], "DESIMAE/ProductionCheckpoints"),
         filename="{epoch:03d}-{val_loss:.4f}",
         monitor="val_loss",
         mode="min",
@@ -49,7 +47,7 @@ if __name__ == "__main__":
     wandb.finish()
 
     logger = WandbLogger(
-        project="Image-Ablation",
+        project="Production",
         name="Final Everything",
         log_model=True,
     )
@@ -67,7 +65,7 @@ if __name__ == "__main__":
     torch.set_float32_matmul_precision("medium")
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_monitor],
-        max_epochs=600,
+        max_epochs=200,
         logger=logger,
         accelerator="gpu",
         devices="auto",
@@ -87,7 +85,7 @@ if __name__ == "__main__":
 
     model = MaskedAutoencoderViT(
         spec_dim=7781,
-        max_epochs=600,
+        max_epochs=200,
         warmup_epoch=5,
         mask_ratio=0.75,
         lam_img_sigma_masked=0.1,

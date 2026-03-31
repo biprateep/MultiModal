@@ -252,6 +252,7 @@ class MaskedAutoencoderViT(pl.LightningModule):
         )
 
         self.initialize_weights()
+        self.patch_embed1d.proj.weight.register_hook(lambda g: g.contiguous())
 
     def initialize_weights(self):
         ###
@@ -610,10 +611,6 @@ class MaskedAutoencoderViT(pl.LightningModule):
         if mask_ratio_img == self.mask_ratio and mask_ratio_img == 1:
             mask_ratio_img = 0.9
         self.mask_ratio_img = mask_ratio_img
-        self.log("chunk_size", self.chunk_size)
-        self.log("mask_ratio", self.mask_ratio)
-        self.log("mask_ratio_img", self.mask_ratio_img)
-
         x, spec, weig, error, img, img_w, img_e, z, xy_pix = batch
         spec_loss, img_loss, total_loss, _, _, _, _, _ = self.forward(spec, weig, error, img, img_w, img_e, z, xy_pix)
 
@@ -622,11 +619,15 @@ class MaskedAutoencoderViT(pl.LightningModule):
             return zero_loss
 
         self.log("train_loss", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("spec_loss", spec_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
-        self.log("img_loss", img_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
-        self.log("task_weight_spec", torch.exp(-self.log_var_spec), on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
-        self.log("task_weight_img", torch.exp(-self.log_var_img), on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
-        self.log("grad_norm", self._grad_norm(), on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+        if batch_idx % 50 == 0:
+            self.log("chunk_size", self.chunk_size)
+            self.log("mask_ratio", self.mask_ratio)
+            self.log("mask_ratio_img", self.mask_ratio_img)
+            self.log("spec_loss", spec_loss, on_step=True, on_epoch=False, sync_dist=True)
+            self.log("img_loss", img_loss, on_step=True, on_epoch=False, sync_dist=True)
+            self.log("task_weight_spec", torch.exp(-self.log_var_spec), on_step=True, on_epoch=False)
+            self.log("task_weight_img", torch.exp(-self.log_var_img), on_step=True, on_epoch=False)
+            self.log("grad_norm", self._grad_norm(), on_step=True, on_epoch=False)
         return total_loss
 
     def validation_step(self, batch, batch_idx):
@@ -687,6 +688,12 @@ class MaskedAutoencoderViT(pl.LightningModule):
             raise ValueError("probs length must match patch_sizes length")
 
         idx = random.choices(range(len(patch_sizes)), weights=probs, k=1)[0]
+
+        if torch.distributed.is_initialized():
+            idx_tensor = torch.tensor([idx], device=self.device)
+            torch.distributed.broadcast(idx_tensor, src=0)
+            idx = idx_tensor.item()
+
         return patch_sizes[idx], mask_ratios[idx]
 
     def _grad_norm(self):

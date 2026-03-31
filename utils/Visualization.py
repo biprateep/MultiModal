@@ -46,7 +46,7 @@ def visualize(model, spec: torch.Tensor, error: torch.Tensor, spec_pred: torch.T
             start = offset + j * patch_len
             end = offset + (j + 1) * patch_len
             ax.axvspan(start, end, color='red', alpha=0.05)
-    ax.set_title(f"Patch Size = {model.patch_size*model.chunk_size}, {model.mask_ratio} (Val Sample {i})")
+    ax.set_title(f"Patch Size = {model.patch_size*model.chunk_size}, {model.mask_ratio:.2f} (Val Sample {i})")
     ax.set_xlabel("Pixel index")
     ax.set_ylabel("Value")
     ax.set_ylim(-3, 15)
@@ -91,7 +91,7 @@ def visualize(model, spec: torch.Tensor, error: torch.Tensor, spec_pred: torch.T
 
     axs[1].imshow(pred_rgb)
     # axs[1].imshow(alpha128, cmap="Reds", alpha=alpha128)
-    axs[1].set_title(f"Masked Reconstruction, {model.mask_ratio_img}")
+    axs[1].set_title(f"Masked Reconstruction, {model.mask_ratio_img:.2f}")
     axs[1].axis("off")
 
     plt.tight_layout()
