@@ -232,6 +232,12 @@ class MaskedAutoencoderViT(pl.LightningModule):
         self.sigma_quantile = sigma_quantile
         self.lam_img_sigma_masked = lam_img_sigma_masked
 
+        # Kendall et al. (2018) homoscedastic uncertainty parameters.
+        # Initialized at 0 so training starts with equal task weighting.
+        self.log_var_spec = nn.Parameter(torch.zeros(()))
+        self.log_var_img = nn.Parameter(torch.zeros(()))
+        self.log_var_z = nn.Parameter(torch.zeros(()))
+
         # extras
 
         self.coord_mlp = nn.Sequential(
@@ -243,11 +249,6 @@ class MaskedAutoencoderViT(pl.LightningModule):
             nn.Linear(2, decoder_embed_dim),
             nn.GELU(),
             nn.Linear(decoder_embed_dim, decoder_embed_dim),
-        )
-
-        self.img_spatial_pos_embed = get_2d_sincos_pos_embed(self.hparams.embed_dim, img_grid_size, img_grid_size)
-        self.decoder_img_spatial_pos_embed = get_2d_sincos_pos_embed(
-            self.hparams.decoder_embed_dim, img_grid_size, img_grid_size
         )
 
         self.initialize_weights()
@@ -388,9 +389,9 @@ class MaskedAutoencoderViT(pl.LightningModule):
         s = self.patch_embed1d(s.unsqueeze(-1))
         e = self.patch_embed1d(e.unsqueeze(-1))
 
-        # I'm going to hardcode 128 size assumption here for now
-        xy_grid_x = (xy_pix[:, 0] + 64.0) / self.img_patch
-        xy_grid_y = (64.0 - xy_pix[:, 1]) / self.img_patch
+        img_center = float(self.patch_embedimg.img_size[0]) / 2.0
+        xy_grid_x = (xy_pix[:, 0] + img_center) / self.img_patch
+        xy_grid_y = (img_center - xy_pix[:, 1]) / self.img_patch
         xy_grid = torch.stack([xy_grid_x, xy_grid_y], dim=-1)
 
         xy_pe = self._continuous_2d_sincos(xy_grid, self.hparams.embed_dim, s.dtype, s.device).unsqueeze(1)
@@ -518,8 +519,9 @@ class MaskedAutoencoderViT(pl.LightningModule):
         pe_start = pos_table[deredshifted_start_indices]
         pe_end = pos_table[deredshifted_end_indices]
         x_spec = x_spec + pe_start[:, 1:, :] + pe_end[:, 1:, :]
-        xy_grid_x = (xy_pix[:, 0] + 64.0) / self.img_patch
-        xy_grid_y = (64.0 - xy_pix[:, 1]) / self.img_patch
+        img_center = float(self.patch_embedimg.img_size[0]) / 2.0
+        xy_grid_x = (xy_pix[:, 0] + img_center) / self.img_patch
+        xy_grid_y = (img_center - xy_pix[:, 1]) / self.img_patch
         xy_grid = torch.stack([xy_grid_x, xy_grid_y], dim=-1)
         xy_pe = self._continuous_2d_sincos(xy_grid, self.hparams.decoder_embed_dim, x.dtype, x.device).unsqueeze(1)
         x_spec = x_spec + xy_pe
@@ -556,7 +558,7 @@ class MaskedAutoencoderViT(pl.LightningModule):
         pred, error, pred_img, error_img = self.forward_decoder(latent, token_mask, z, xy_pix)
 
         offset = self.left_patches * self.patch_size
-        spec_loss, img_loss, total_loss = forward_loss(
+        spec_loss, img_loss, _ = forward_loss(
             pred[:, offset:offset + self.spec_dim],
             spec,
             weig,
@@ -586,8 +588,16 @@ class MaskedAutoencoderViT(pl.LightningModule):
             lam_sigma_right=self.lam_sigma_right,
             lam_img_sigma_masked=self.lam_img_sigma_masked,
         )
+        total_loss = self._combine_task_losses(spec_loss, img_loss)
         return spec_loss, img_loss, total_loss, pred, error, pred_img, error_img, token_mask
 
+    def _combine_task_losses(self, spec_loss, img_loss):
+        total_loss = (
+            torch.exp(-self.log_var_spec) * spec_loss + self.log_var_spec
+            + torch.exp(-self.log_var_img) * img_loss + self.log_var_img
+        )
+        return total_loss
+        
     def training_step(self, batch, batch_idx):
         zero_loss = sum((p.sum() * 0.0) for p in self.parameters() if p.requires_grad)
 
@@ -614,6 +624,8 @@ class MaskedAutoencoderViT(pl.LightningModule):
         self.log("train_loss", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("spec_loss", spec_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
         self.log("img_loss", img_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.log("task_weight_spec", torch.exp(-self.log_var_spec), on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.log("task_weight_img", torch.exp(-self.log_var_img), on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
         self.log("grad_norm", self._grad_norm(), on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
         return total_loss
 
@@ -678,12 +690,10 @@ class MaskedAutoencoderViT(pl.LightningModule):
         return patch_sizes[idx], mask_ratios[idx]
 
     def _grad_norm(self):
-        total_norm = 0.0
-        for p in self.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-        return total_norm ** 0.5
+        norms = [p.grad.detach().norm(2) for p in self.parameters() if p.grad is not None]
+        if not norms:
+            return 0.0
+        return torch.stack(norms).norm(2).item()
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)

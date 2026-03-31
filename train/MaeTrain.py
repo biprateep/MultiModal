@@ -19,8 +19,17 @@ if __name__ == "__main__":
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-    train_loader, val_loader = CreateMultimodalDataLoadersIter(end=500000, train_size=350000, batch_size=32)
-    # train_loader, val_loader = CreateMultimodalDataLoadersIter(end=4737442, train_size=3316209, batch_size=32)
+    if hasattr(torch.backends, "cuda"):
+        if hasattr(torch.backends.cuda, "enable_flash_sdp"):
+            torch.backends.cuda.enable_flash_sdp(True)
+            print("Enabled flash SDPA")
+        if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+            print("Enabled memory-efficient SDPA")
+
+    # train_loader, val_loader, test_loader = CreateMultimodalDataLoadersIter(end=500000, train_size=350000, batch_size=32)
+    train_loader, val_loader, test_loader = CreateMultimodalDataLoadersIter(end=4737442, train_size=4642694, batch_size=32)
+    # train 98%, val 1%, test 1% 
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
@@ -39,18 +48,18 @@ if __name__ == "__main__":
 
     wandb.finish()
 
-    # logger = WandbLogger(
-    #     project="Image-Ablation",
-    #     name="Large model, CNN, 500K",
-    #     log_model=True,
-    # )
-
     logger = WandbLogger(
         project="Image-Ablation",
-        id="nfwlrvvr",
-        resume="must",
+        name="Final Everything",
         log_model=True,
     )
+
+    # logger = WandbLogger(
+    #     project="Image-Ablation",
+    #     id="nfwlrvvr",
+    #     resume="must",
+    #     log_model=True,
+    # )
 
     print(f"W&B dashboard: {logger.experiment.url}")
 
@@ -62,14 +71,19 @@ if __name__ == "__main__":
         logger=logger,
         accelerator="gpu",
         devices="auto",
-        strategy="ddp",
+        strategy="ddp_find_unused_parameters_true",
         num_nodes=4,
         precision="32",
         gradient_clip_val=100.0,
         gradient_clip_algorithm="norm",
     )
 
-    prob = 0.7 / 15
+    prob = 0.7 / 14
+    patch_scheme={
+            "patch_sizes": [1, 2, 4, 8, 16, 32, 64, 128, 64, 32, 16, 8, 4, 2, 1],
+            "mask_ratios": [1.0, 13/14, 12/14, 11/14, 10/14, 9/14, 8/14, 7/14, 6/14, 5/14, 4/14, 3/14, 2/14, 1/14, 0.0],
+            "probs": [0.3, prob, prob, prob, prob, prob, prob, prob, prob, prob, prob, prob, prob, prob, prob],
+        }
 
     model = MaskedAutoencoderViT(
         spec_dim=7781,
@@ -88,13 +102,9 @@ if __name__ == "__main__":
         decoder_depth=8,
         decoder_num_heads=16,
         decoder_MLP_coefficient=1,
-        patch_scheme={
-            "patch_sizes": [1, 1, 2, 4, 8, 16, 32, 64, 128, 64, 32, 16, 8, 4, 2, 1],
-            "mask_ratios": [1, 0.9, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.4, 0.35, 0.3, 0.2, 0.1, 0.0],
-            "probs": [0.3, prob, prob, prob, prob, prob, prob, prob, prob, prob, prob, prob, prob, prob, prob, prob],
-        },
+        patch_scheme=patch_scheme,
     )
 
-    ckpt_path = "/pscratch/sd/p/pzehao/DESIMAE/ImageMHP/epoch=077-val_loss=-0.5690.ckpt"
-    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader, ckpt_path=ckpt_path)
-    # trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    # ckpt_path = "/pscratch/sd/p/pzehao/DESIMAE/ImageMHP/epoch=077-val_loss=-0.5690.ckpt"
+    # trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader, ckpt_path=ckpt_path)
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)

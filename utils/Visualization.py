@@ -91,7 +91,7 @@ def visualize(model, spec: torch.Tensor, error: torch.Tensor, spec_pred: torch.T
 
     axs[1].imshow(pred_rgb)
     # axs[1].imshow(alpha128, cmap="Reds", alpha=alpha128)
-    axs[1].set_title("Masked Reconstruction")
+    axs[1].set_title(f"Masked Reconstruction, {model.mask_ratio_img}")
     axs[1].axis("off")
 
     plt.tight_layout()

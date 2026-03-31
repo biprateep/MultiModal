@@ -306,3 +306,4 @@ def generate_attn_mask(patch_size: int,
     # To prevent CLS token from being masked
 
     return attn_mask, token_mask
+    

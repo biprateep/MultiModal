@@ -1,5 +1,5 @@
 import numpy as np
-from torch.utils.data import TensorDataset, DataLoader, Dataset, random_split, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
 from scipy.ndimage import convolve1d
 import pandas
 import torch
@@ -128,7 +128,7 @@ class MultimodalDataset(Dataset):
             spec_tensor = torch.from_numpy(spectra)
             return (
                 spec_tensor,
-                spec_tensor.clone(),
+                spec_tensor,
                 torch.from_numpy(ivar),
                 torch.from_numpy(error),
                 torch.from_numpy(img),
@@ -145,30 +145,82 @@ class MultimodalDataset(Dataset):
     def __len__(self):
         return self.end - self.start
 
+
+class AugmentedSubset(Dataset):
+    def __init__(self, subset: Subset, max_shift=50):
+        self.subset = subset
+        self.max_shift = max_shift
+
+    def __len__(self):
+        return len(self.subset)
+
+    def __getitem__(self, idx):
+        sample = self.subset[idx]
+        if sample is None:
+            return None
+
+        if self.max_shift <= 0:
+            return sample
+
+        dx = int(np.random.randint(-self.max_shift, self.max_shift + 1))
+        dy = int(np.random.randint(-self.max_shift, self.max_shift + 1))
+
+        x, spec, ivar, error, img, img_ivar, img_error, z, xy_pix = sample
+        img = torch.roll(img, shifts=(dy, dx), dims=(-2, -1))
+        img_ivar = torch.roll(img_ivar, shifts=(dy, dx), dims=(-2, -1))
+        img_error = torch.roll(img_error, shifts=(dy, dx), dims=(-2, -1))
+        xy_pix = xy_pix + torch.tensor([dx, -dy], dtype=xy_pix.dtype)
+
+        return x, spec, ivar, error, img, img_ivar, img_error, z, xy_pix
+
 def CreateMultimodalDataLoadersIter(
     path='/pscratch/sd/p/pzehao/iron/desi_maglim_19_5.zarr',
     end=1000000,
     train_size=700000,
+    val_size=None,
+    test_size=None,
     batch_size=16,
     augment_train=True,
     max_shift=50,
 ):
-    train_base = MultimodalDataset(path, start=0, end=end, augment=augment_train, max_shift=max_shift)
-    val_base   = MultimodalDataset(path, start=0, end=end, augment=False, max_shift=0)
+    base_dataset = MultimodalDataset(path, start=0, end=end, augment=False, max_shift=0)
 
-    total_size = len(train_base)
+    total_size = len(base_dataset)
     if train_size > total_size:
         raise ValueError(f"train_size ({train_size}) exceeds dataset size ({total_size})")
 
-    val_size = total_size - train_size
+    remaining = total_size - train_size
+    if val_size is None and test_size is None:
+        val_size = remaining // 2
+        test_size = remaining - val_size
+    elif val_size is None:
+        val_size = remaining - int(test_size)
+    elif test_size is None:
+        test_size = remaining - int(val_size)
+
+    val_size = int(val_size)
+    test_size = int(test_size)
+
+    if val_size < 0 or test_size < 0:
+        raise ValueError(f"val_size and test_size must be non-negative (got val_size={val_size}, test_size={test_size})")
+    if train_size + val_size + test_size != total_size:
+        raise ValueError(
+            f"Split sizes must sum to dataset size ({total_size}), got "
+            f"train={train_size}, val={val_size}, test={test_size}"
+        )
 
     g = torch.Generator().manual_seed(130)
     perm = torch.randperm(total_size, generator=g).tolist()
     train_idx = perm[:train_size]
-    val_idx = perm[train_size:]
+    val_start = train_size
+    val_end = val_start + val_size
+    val_idx = perm[val_start:val_end]
+    test_idx = perm[val_end:]
 
-    train_dataset = Subset(train_base, train_idx)
-    val_dataset   = Subset(val_base, val_idx)
+    train_subset = Subset(base_dataset, train_idx)
+    train_dataset = AugmentedSubset(train_subset, max_shift=max_shift) if augment_train else train_subset
+    val_dataset = Subset(base_dataset, val_idx)
+    test_dataset = Subset(base_dataset, test_idx)
 
     num_workers = 7
     loader_kwargs = dict(
@@ -178,7 +230,7 @@ def CreateMultimodalDataLoadersIter(
         persistent_workers=(num_workers > 0),
     )
     if num_workers > 0:
-        loader_kwargs["prefetch_factor"] = 2
+        loader_kwargs["prefetch_factor"] = 4
 
     train_loader = DataLoader(
         train_dataset,
@@ -192,7 +244,13 @@ def CreateMultimodalDataLoadersIter(
         shuffle=False,
         **loader_kwargs,
     )
-    return train_loader, val_loader
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        **loader_kwargs,
+    )
+    return train_loader, val_loader, test_loader
 
 def safe_collate(batch):
     batch = [x for x in batch if x is not None]

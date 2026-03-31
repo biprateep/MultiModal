@@ -241,10 +241,6 @@ class MaskedAutoencoderViT(pl.LightningModule):
             nn.Linear(decoder_embed_dim, decoder_embed_dim),
         )
 
-        self.img_spatial_pos_embed = get_2d_sincos_pos_embed(self.hparams.embed_dim, img_grid_size, img_grid_size)
-        self.decoder_img_spatial_pos_embed = get_2d_sincos_pos_embed(self.hparams.decoder_embed_dim, img_grid_size, img_grid_size)
-
-
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -378,9 +374,9 @@ class MaskedAutoencoderViT(pl.LightningModule):
         s = self.patch_embed1d(s.unsqueeze(-1))
         e = self.patch_embed1d(e.unsqueeze(-1))
 
-        # I'm going to hardcode 128 size assumption here for now
-        xy_grid_x = (xy_pix[:, 0] + 64.0) / self.img_patch
-        xy_grid_y = (64.0 - xy_pix[:, 1]) / self.img_patch
+        img_center = float(self.patch_embedimg.img_size[0]) / 2.0
+        xy_grid_x = (xy_pix[:, 0] + img_center) / self.img_patch
+        xy_grid_y = (img_center - xy_pix[:, 1]) / self.img_patch
         xy_grid = torch.stack([xy_grid_x, xy_grid_y], dim=-1)
 
         xy_pe = self._continuous_2d_sincos(
@@ -483,8 +479,9 @@ class MaskedAutoencoderViT(pl.LightningModule):
         pe_start = pos_table[deredshifted_start_indices]
         pe_end = pos_table[deredshifted_end_indices]
         x_spec = x_spec + pe_start[:, 1:, :] + pe_end[:, 1:, :]
-        xy_grid_x = (xy_pix[:, 0] + 64.0) / self.img_patch
-        xy_grid_y = (64.0 - xy_pix[:, 1]) / self.img_patch
+        img_center = float(self.patch_embedimg.img_size[0]) / 2.0
+        xy_grid_x = (xy_pix[:, 0] + img_center) / self.img_patch
+        xy_grid_y = (img_center - xy_pix[:, 1]) / self.img_patch
         xy_grid = torch.stack([xy_grid_x, xy_grid_y], dim=-1)
         xy_pe = self._continuous_2d_sincos(
             xy_grid, self.hparams.decoder_embed_dim, x.dtype, x.device
@@ -858,12 +855,10 @@ class MaskedAutoencoderViT(pl.LightningModule):
         return patch_sizes[idx], mask_ratios[idx]
     
     def _grad_norm(self):
-        total_norm = 0.0
-        for p in self.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-        return total_norm ** 0.5
+        norms = [p.grad.detach().norm(2) for p in self.parameters() if p.grad is not None]
+        if not norms:
+            return 0.0
+        return torch.stack(norms).norm(2).item()
     
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -1091,8 +1086,8 @@ if __name__ == "__main__":
     
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     
-    train_loader, val_loader = CreateMultimodalDataLoadersIter(end=5000, train_size=3500, batch_size=32)
-    # train_loader, val_loader = CreateMultimodalDataLoadersIter(end=4737442, train_size=3316209, batch_size=32)
+    train_loader, val_loader, test_loader = CreateMultimodalDataLoadersIter(end=5000, train_size=3500, batch_size=32)
+    # train_loader, val_loader, test_loader = CreateMultimodalDataLoadersIter(end=4737442, train_size=3316209, batch_size=32)
     
     lr_monitor = LearningRateMonitor(logging_interval='step')
     
