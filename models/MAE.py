@@ -609,7 +609,7 @@ class MaskedAutoencoderViT(pl.LightningModule):
             print(f"Non-finite loss at step {batch_idx}; using zero loss")
             return zero_loss
 
-        self.log("train_loss_step", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_loss", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
         # Trigger training visualizations by wall clock (roughly every 30 minutes).
         if getattr(self.trainer, "is_global_zero", False):
@@ -626,9 +626,9 @@ class MaskedAutoencoderViT(pl.LightningModule):
             self.log("chunk_size", self.chunk_size)
             self.log("mask_ratio", self.mask_ratio)
             self.log("mask_ratio_img", self.mask_ratio_img)
-            self.log("spec_loss_step", spec_loss, on_step=True, on_epoch=False, sync_dist=True)
-            self.log("img_loss_step", img_loss, on_step=True, on_epoch=False, sync_dist=True)
-            self.log("grad_norm_step", self._grad_norm(), on_step=True, on_epoch=False)
+            self.log("spec_loss", spec_loss, on_step=True, on_epoch=False, sync_dist=True)
+            self.log("img_loss", img_loss, on_step=True, on_epoch=False, sync_dist=True)
+            self.log("grad_norm", self._grad_norm(), on_step=True, on_epoch=False)
         return total_loss
 
     def validation_step(self, batch, batch_idx):
@@ -647,9 +647,9 @@ class MaskedAutoencoderViT(pl.LightningModule):
         )
 
         self.log("val_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val_loss_step", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val_spec_loss_step", spec_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
-        self.log("val_img_loss_step", img_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.log("val_loss", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_spec_loss", spec_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.log("val_img_loss", img_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
 
         if batch_idx == 0:
             token_mask = token_mask.unsqueeze(0).expand(spec.size(0), -1)
