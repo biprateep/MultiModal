@@ -29,15 +29,32 @@ if __name__ == "__main__":
     train_loader, val_loader, test_loader = CreateMultimodalDataLoadersIter(end=4737442, train_size=4642694, batch_size=32)
     # train 98%, val 1%, test 1% 
 
+    total_target_epochs = 200
+    checkpoint_dir = os.path.join(os.environ["SCRATCH"], "DESIMAE/ProductionCheckpointsFinal")
+    resume_ckpt_path = os.environ.get("RESUME_CKPT", os.path.join(checkpoint_dir, "last.ckpt"))
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    if os.path.exists(resume_ckpt_path):
+        ckpt_meta = torch.load(resume_ckpt_path, map_location="cpu")
+        last_finished_epoch = int(ckpt_meta.get("epoch", -1))
+        run_max_epochs = min(total_target_epochs, last_finished_epoch + 2)
+        ckpt_path = resume_ckpt_path
+        print(f"Resuming from {resume_ckpt_path} (last_finished_epoch={last_finished_epoch})")
+    else:
+        run_max_epochs = 1
+        ckpt_path = None
+        print("No previous checkpoint found. Starting from scratch for epoch 0.")
+
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
     checkpoint_callback = ModelCheckpoint(
         save_top_k=-1,
         every_n_epochs=1,
-        dirpath=os.path.join(os.environ["SCRATCH"], "DESIMAE/ProductionCheckpoints"),
+        dirpath=checkpoint_dir,
         filename="{epoch:03d}-{val_loss:.4f}",
         monitor="val_loss",
         mode="min",
+        save_last=True,
         save_weights_only=False,
     )
 
@@ -46,9 +63,30 @@ if __name__ == "__main__":
 
     wandb.finish()
 
+    run_id_path = os.environ.get("WANDB_RUN_ID_FILE", os.path.join(checkpoint_dir, "wandb_run_id.txt"))
+    if os.path.exists(run_id_path):
+        with open(run_id_path, "r", encoding="utf-8") as f:
+            wandb_run_id = f.read().strip()
+    else:
+        # Atomically create a shared run-id file so all distributed ranks use one run.
+        candidate_id = wandb.util.generate_id()
+        try:
+            fd = os.open(run_id_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(candidate_id + "\n")
+            wandb_run_id = candidate_id
+        except FileExistsError:
+            with open(run_id_path, "r", encoding="utf-8") as f:
+                wandb_run_id = f.read().strip()
+
+    if not wandb_run_id:
+        raise RuntimeError(f"Invalid W&B run id in {run_id_path}")
+
     logger = WandbLogger(
         project="Production",
         name="Final Everything",
+        id=wandb_run_id,
+        resume="allow",
         log_model=True,
     )
 
@@ -59,13 +97,14 @@ if __name__ == "__main__":
     #     log_model=True,
     # )
 
+    print(f"W&B run id: {wandb_run_id} (stored at {run_id_path})")
     print(f"W&B dashboard: {logger.experiment.url}")
 
     torch.cuda.empty_cache()
     torch.set_float32_matmul_precision("medium")
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_monitor],
-        max_epochs=200,
+        max_epochs=run_max_epochs,
         logger=logger,
         accelerator="gpu",
         devices="auto",
@@ -86,7 +125,7 @@ if __name__ == "__main__":
     model = MaskedAutoencoderViT(
         spec_dim=7781,
         max_epochs=200,
-        warmup_epoch=5,
+        warmup_epoch=1,
         mask_ratio=0.75,
         lam_img_sigma_masked=0.1,
         embed_dim=256,
@@ -103,6 +142,4 @@ if __name__ == "__main__":
         patch_scheme=patch_scheme,
     )
 
-    # ckpt_path = "/pscratch/sd/p/pzehao/DESIMAE/ProductionCheckpoints/epoch=005-val_loss=-12.4041.ckpt"
-    # trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader, ckpt_path=ckpt_path)
-    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader, ckpt_path=ckpt_path)

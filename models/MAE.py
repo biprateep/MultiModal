@@ -1,5 +1,6 @@
 import math
 import random
+import time
 
 import numpy as np
 import pytorch_lightning as pl
@@ -231,12 +232,8 @@ class MaskedAutoencoderViT(pl.LightningModule):
         self.lam_sigma_right = lam_sigma_right
         self.sigma_quantile = sigma_quantile
         self.lam_img_sigma_masked = lam_img_sigma_masked
-
-        # Kendall et al. (2018) homoscedastic uncertainty parameters.
-        # Initialized at 0 so training starts with equal task weighting.
-        self.log_var_spec = nn.Parameter(torch.zeros(()))
-        self.log_var_img = nn.Parameter(torch.zeros(()))
-        self.log_var_z = nn.Parameter(torch.zeros(()))
+        self.train_vis_interval_sec = 30 * 60
+        self._last_train_vis_time = 0.0
 
         # extras
 
@@ -559,7 +556,7 @@ class MaskedAutoencoderViT(pl.LightningModule):
         pred, error, pred_img, error_img = self.forward_decoder(latent, token_mask, z, xy_pix)
 
         offset = self.left_patches * self.patch_size
-        spec_loss, img_loss, _ = forward_loss(
+        spec_loss, img_loss, total_loss = forward_loss(
             pred[:, offset:offset + self.spec_dim],
             spec,
             weig,
@@ -589,15 +586,7 @@ class MaskedAutoencoderViT(pl.LightningModule):
             lam_sigma_right=self.lam_sigma_right,
             lam_img_sigma_masked=self.lam_img_sigma_masked,
         )
-        total_loss = self._combine_task_losses(spec_loss, img_loss)
         return spec_loss, img_loss, total_loss, pred, error, pred_img, error_img, token_mask
-
-    def _combine_task_losses(self, spec_loss, img_loss):
-        total_loss = (
-            torch.exp(-self.log_var_spec) * spec_loss + self.log_var_spec
-            + torch.exp(-self.log_var_img) * img_loss + self.log_var_img
-        )
-        return total_loss
         
     def training_step(self, batch, batch_idx):
         zero_loss = sum((p.sum() * 0.0) for p in self.parameters() if p.requires_grad)
@@ -612,22 +601,34 @@ class MaskedAutoencoderViT(pl.LightningModule):
             mask_ratio_img = 0.9
         self.mask_ratio_img = mask_ratio_img
         x, spec, weig, error, img, img_w, img_e, z, xy_pix = batch
-        spec_loss, img_loss, total_loss, _, _, _, _, _ = self.forward(spec, weig, error, img, img_w, img_e, z, xy_pix)
+        spec_loss, img_loss, total_loss, spec_pred, error_pred, pred_img, error_img, token_mask = self.forward(
+            spec, weig, error, img, img_w, img_e, z, xy_pix
+        )
 
         if not torch.isfinite(total_loss):
             print(f"Non-finite loss at step {batch_idx}; using zero loss")
             return zero_loss
 
-        self.log("train_loss", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_loss_step", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        # Trigger training visualizations by wall clock (roughly every 30 minutes).
+        if getattr(self.trainer, "is_global_zero", False):
+            now = time.time()
+            if now - self._last_train_vis_time >= self.train_vis_interval_sec:
+                token_mask_b = token_mask.unsqueeze(0).expand(spec.size(0), -1)
+                mask_spec = token_mask_b[:, :-self.num_patchesimg].long()
+                mask_img = token_mask_b[:, -self.num_patchesimg:].long()
+                i_vis = min(4, spec.size(0) - 1)
+                visualize(self, spec, error, spec_pred, error_pred, img, img_e, pred_img, error_img, mask_spec, mask_img, i=i_vis)
+                self._last_train_vis_time = now
+
         if batch_idx % 50 == 0:
             self.log("chunk_size", self.chunk_size)
             self.log("mask_ratio", self.mask_ratio)
             self.log("mask_ratio_img", self.mask_ratio_img)
-            self.log("spec_loss", spec_loss, on_step=True, on_epoch=False, sync_dist=True)
-            self.log("img_loss", img_loss, on_step=True, on_epoch=False, sync_dist=True)
-            self.log("task_weight_spec", torch.exp(-self.log_var_spec), on_step=True, on_epoch=False)
-            self.log("task_weight_img", torch.exp(-self.log_var_img), on_step=True, on_epoch=False)
-            self.log("grad_norm", self._grad_norm(), on_step=True, on_epoch=False)
+            self.log("spec_loss_step", spec_loss, on_step=True, on_epoch=False, sync_dist=True)
+            self.log("img_loss_step", img_loss, on_step=True, on_epoch=False, sync_dist=True)
+            self.log("grad_norm_step", self._grad_norm(), on_step=True, on_epoch=False)
         return total_loss
 
     def validation_step(self, batch, batch_idx):
@@ -645,15 +646,16 @@ class MaskedAutoencoderViT(pl.LightningModule):
             spec, weig, error, img, img_w, img_e, z, xy_pix
         )
 
-        self.log("val_loss", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val_spec_loss", spec_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
-        self.log("val_img_loss", img_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.log("val_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_loss_step", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_spec_loss_step", spec_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.log("val_img_loss_step", img_loss, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
 
         if batch_idx == 0:
             token_mask = token_mask.unsqueeze(0).expand(spec.size(0), -1)
             mask_spec = token_mask[:, :-self.num_patchesimg].long()
             mask_img = token_mask[:, -self.num_patchesimg:].long()
-            visualize(self, spec, error, spec_pred, error_pred, img, img_e, pred_img, error_img, mask_spec, mask_img)
+            visualize(self, spec, error, spec_pred, error_pred, img, img_e, pred_img, error_img, mask_spec, mask_img, i=4)
 
         return total_loss
 
@@ -688,12 +690,7 @@ class MaskedAutoencoderViT(pl.LightningModule):
             raise ValueError("probs length must match patch_sizes length")
 
         idx = random.choices(range(len(patch_sizes)), weights=probs, k=1)[0]
-
-        if torch.distributed.is_initialized():
-            idx_tensor = torch.tensor([idx], device=self.device)
-            torch.distributed.broadcast(idx_tensor, src=0)
-            idx = idx_tensor.item()
-
+        
         return patch_sizes[idx], mask_ratios[idx]
 
     def _grad_norm(self):
@@ -705,10 +702,14 @@ class MaskedAutoencoderViT(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
 
-        # Run cosine schedule per optimizer step instead of per epoch.
-        total_steps = int(getattr(self.trainer, "estimated_stepping_batches", self.max_epochs))
-        total_steps = max(1, total_steps)
-        warmup_steps = int(self.warmup_epoch * total_steps / max(1, int(self.max_epochs)))
+        # Use a fixed full-training horizon (self.max_epochs), even when running
+        # one-epoch chained jobs with a smaller trainer.max_epochs.
+        est_total_steps = int(getattr(self.trainer, "estimated_stepping_batches", self.max_epochs))
+        trainer_epochs = max(1, int(getattr(self.trainer, "max_epochs", 1)))
+        steps_per_epoch = max(1, est_total_steps // trainer_epochs)
+
+        total_steps = max(1, steps_per_epoch * max(1, int(self.max_epochs)))
+        warmup_steps = max(0, int(self.warmup_epoch) * steps_per_epoch)
         warmup_steps = max(0, min(warmup_steps, total_steps - 1))
 
         self.lr_scheduler = CosineWarmupScheduler(
