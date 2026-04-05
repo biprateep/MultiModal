@@ -1,9 +1,57 @@
 import numpy as np
-from torch.utils.data import DataLoader, Dataset, Subset
+import random
+import math
+from torch.utils.data import DataLoader, Dataset, Sampler, Subset
 from scipy.ndimage import convolve1d
 import pandas
 import torch
 import zarr
+
+
+class ContiguousDistributedSampler(Sampler):
+    """Shard dataset into contiguous per-rank chunks to preserve index locality."""
+
+    def __init__(self, dataset, drop_last=False):
+        self.dataset = dataset
+        self.drop_last = bool(drop_last)
+
+    def _rank_world_size(self):
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            return int(torch.distributed.get_rank()), int(torch.distributed.get_world_size())
+        return 0, 1
+
+    def _num_samples(self, world_size):
+        n = len(self.dataset)
+        if self.drop_last:
+            return n // world_size
+        return int(math.ceil(n / world_size))
+
+    def __iter__(self):
+        n = len(self.dataset)
+        rank, world_size = self._rank_world_size()
+        num_samples = self._num_samples(world_size)
+
+        if n == 0 or num_samples == 0:
+            return iter([])
+
+        if self.drop_last:
+            start = rank * num_samples
+            end = start + num_samples
+            return iter(range(start, end))
+
+        start = rank * num_samples
+        end = min(start + num_samples, n)
+        indices = list(range(start, end))
+
+        if len(indices) < num_samples:
+            pad = num_samples - len(indices)
+            indices.extend((list(range(n)) * ((pad // n) + 1))[:pad])
+
+        return iter(indices)
+
+    def __len__(self):
+        _, world_size = self._rank_world_size()
+        return self._num_samples(world_size)
 
 def get_extreme_mask(spectra: np.ndarray, ivar: np.ndarray) -> np.ndarray:
     """
@@ -182,6 +230,17 @@ def CreateMultimodalDataLoadersIter(
     batch_size=16,
     augment_train=True,
     max_shift=50,
+    train_index_mode='random',
+    train_block_size=100,
+    train_interleave_groups=4,
+    train_interleave_span=1,
+    shuffle_train=None,
+    train_subset_size=None,
+    train_cycle_epoch=0,
+    train_cycle_drop_last=False,
+    num_workers=7,
+    prefetch_factor=4,
+    distributed_shard_mode='lightning',
 ):
     base_dataset = MultimodalDataset(path, start=0, end=end, augment=False, max_shift=0)
 
@@ -212,6 +271,84 @@ def CreateMultimodalDataLoadersIter(
     g = torch.Generator().manual_seed(130)
     perm = torch.randperm(total_size, generator=g).tolist()
     train_idx = perm[:train_size]
+
+    def _interleave_blocks(blocks, group_count, span):
+        """Interleave nearby blocks to improve mixing while preserving locality."""
+        if not blocks:
+            return []
+
+        interleaved = []
+        for group_start in range(0, len(blocks), group_count):
+            group = blocks[group_start:group_start + group_count]
+            max_len = max(len(block) for block in group)
+            for offset in range(0, max_len, span):
+                for block in group:
+                    if offset < len(block):
+                        interleaved.extend(block[offset:offset + span])
+        return interleaved
+
+    if train_index_mode == 'random':
+        pass
+    elif train_index_mode in ('block_shuffle', 'interleave'):
+        if train_block_size <= 0:
+            raise ValueError(f"train_block_size must be > 0 (got {train_block_size})")
+
+        if train_index_mode == 'interleave':
+            if train_interleave_groups <= 0:
+                raise ValueError(
+                    f"train_interleave_groups must be > 0 (got {train_interleave_groups})"
+                )
+            if train_interleave_span <= 0:
+                raise ValueError(
+                    f"train_interleave_span must be > 0 (got {train_interleave_span})"
+                )
+
+        # Improve Zarr locality: keep contiguous indices within blocks while
+        # still randomizing block order to preserve sample mixing.
+        train_idx = sorted(train_idx)
+        blocks = [train_idx[i:i + train_block_size] for i in range(0, len(train_idx), train_block_size)]
+        py_rng = random.Random(130)
+        py_rng.shuffle(blocks)
+
+        if train_index_mode == 'block_shuffle':
+            train_idx = [idx for block in blocks for idx in block]
+        else:
+            train_idx = _interleave_blocks(
+                blocks,
+                group_count=train_interleave_groups,
+                span=train_interleave_span,
+            )
+    else:
+        raise ValueError(
+            f"Unsupported train_index_mode '{train_index_mode}'. "
+            "Expected one of: ['random', 'block_shuffle', 'interleave']"
+        )
+
+    if train_subset_size is not None:
+        train_subset_size = int(train_subset_size)
+
+    if train_subset_size is not None and train_subset_size > 0 and train_subset_size < len(train_idx):
+        cycle_epoch = int(train_cycle_epoch)
+        cycle_epoch = max(0, cycle_epoch)
+
+        # Rotate subset-window order by epoch while keeping full-epoch coverage.
+        windows = [
+            train_idx[i:i + train_subset_size]
+            for i in range(0, len(train_idx), train_subset_size)
+        ]
+
+        if train_cycle_drop_last and windows and len(windows[-1]) < train_subset_size:
+            windows = windows[:-1]
+
+        if not windows:
+            raise ValueError(
+                f"train_subset_size={train_subset_size} is too large for train_idx size={len(train_idx)}"
+            )
+
+        start_window = cycle_epoch % len(windows)
+        ordered_windows = windows[start_window:] + windows[:start_window]
+        train_idx = [idx for window in ordered_windows for idx in window]
+
     val_start = train_size
     val_end = val_start + val_size
     val_idx = perm[val_start:val_end]
@@ -222,32 +359,64 @@ def CreateMultimodalDataLoadersIter(
     val_dataset = Subset(base_dataset, val_idx)
     test_dataset = Subset(base_dataset, test_idx)
 
-    num_workers = 7
+    if distributed_shard_mode not in ('lightning', 'contiguous'):
+        raise ValueError(
+            f"Unsupported distributed_shard_mode '{distributed_shard_mode}'. "
+            "Expected one of: ['lightning', 'contiguous']"
+        )
+
+    num_workers = int(num_workers)
+    if num_workers < 0:
+        raise ValueError(f"num_workers must be >= 0 (got {num_workers})")
+
     loader_kwargs = dict(
         num_workers=num_workers,
         collate_fn=safe_collate,
         pin_memory=torch.cuda.is_available(),
         persistent_workers=(num_workers > 0),
     )
-    if num_workers > 0:
-        loader_kwargs["prefetch_factor"] = 4
+    if num_workers > 0 and prefetch_factor is not None:
+        loader_kwargs["prefetch_factor"] = int(prefetch_factor)
+
+    if shuffle_train is None:
+        # For locality-aware index order, avoid a second full shuffle in the loader.
+        subset_active = (
+            train_subset_size is not None
+            and train_subset_size > 0
+            and train_subset_size < train_size
+        )
+        if subset_active:
+            shuffle_train = False
+        else:
+            shuffle_train = (train_index_mode == 'random')
+
+    train_sampler = None
+    val_sampler = None
+    test_sampler = None
+    if distributed_shard_mode == 'contiguous':
+        train_sampler = ContiguousDistributedSampler(train_dataset, drop_last=False)
+        val_sampler = ContiguousDistributedSampler(val_dataset, drop_last=False)
+        test_sampler = ContiguousDistributedSampler(test_dataset, drop_last=False)
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=(shuffle_train if train_sampler is None else False),
+        sampler=train_sampler,
         **loader_kwargs,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
+        sampler=val_sampler,
         **loader_kwargs,
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
+        sampler=test_sampler,
         **loader_kwargs,
     )
     return train_loader, val_loader, test_loader

@@ -85,41 +85,40 @@ if __name__ == "__main__":
 
     wandb.finish()
 
-    run_id_path = os.path.join(checkpoint_dir, "wandb_run_id.txt")
-    if os.path.exists(run_id_path):
-        with open(run_id_path, "r", encoding="utf-8") as f:
-            wandb_run_id = f.read().strip()
-    else:
-        # Atomically create a shared run-id file so all distributed ranks use one run.
-        candidate_id = wandb.util.generate_id()
-        try:
-            fd = os.open(run_id_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(candidate_id + "\n")
-            wandb_run_id = candidate_id
-        except FileExistsError:
-            with open(run_id_path, "r", encoding="utf-8") as f:
-                wandb_run_id = f.read().strip()
+    # run_id_path = os.path.join(checkpoint_dir, "wandb_run_id.txt")
+    # if os.path.exists(run_id_path):
+    #     with open(run_id_path, "r", encoding="utf-8") as f:
+    #         wandb_run_id = f.read().strip()
+    # else:
+    #     # Atomically create a shared run-id file so all distributed ranks use one run.
+    #     candidate_id = wandb.util.generate_id()
+    #     try:
+    #         fd = os.open(run_id_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    #         with os.fdopen(fd, "w", encoding="utf-8") as f:
+    #             f.write(candidate_id + "\n")
+    #         wandb_run_id = candidate_id
+    #     except FileExistsError:
+    #         with open(run_id_path, "r", encoding="utf-8") as f:
+    #             wandb_run_id = f.read().strip()
 
-    if not wandb_run_id:
-        raise RuntimeError(f"Invalid W&B run id in {run_id_path}")
-
-    logger = WandbLogger(
-        project="Production",
-        name="Final Everything",
-        id=wandb_run_id,
-        resume="allow",
-        log_model=True,
-    )
+    # if not wandb_run_id:
+    #     raise RuntimeError(f"Invalid W&B run id in {run_id_path}")
 
     # logger = WandbLogger(
     #     project="Production",
-    #     id="2gklodik",
-    #     resume="must",
+    #     name="Final Everything",
+    #     id=wandb_run_id,
+    #     resume="allow",
     #     log_model=True,
     # )
 
-    print(f"W&B run id: {wandb_run_id} (stored at {run_id_path})")
+    logger = WandbLogger(
+        project="Production",
+        name="Test",
+        log_model=False,
+    )
+
+    # print(f"W&B run id: {wandb_run_id} (stored at {run_id_path})")
     print(f"W&B dashboard: {logger.experiment.url}")
 
     torch.cuda.empty_cache()
