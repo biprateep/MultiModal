@@ -106,7 +106,7 @@ if __name__ == "__main__":
 
     logger = WandbLogger(
         project="Production",
-        name="Final Everything",
+        name="Final Simple",
         id=wandb_run_id,
         resume="allow",
         log_model=True,
@@ -149,7 +149,7 @@ if __name__ == "__main__":
 
     model = MaskedAutoencoderViT(
         spec_dim=7781,
-        max_epochs=200,
+        max_epochs=180,
         warmup_epoch=1,
         mask_ratio=0.75,
         lam_img_sigma_masked=0.1,
