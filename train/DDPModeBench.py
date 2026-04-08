@@ -145,6 +145,7 @@ def main():
         default="lightning",
     )
     parser.add_argument("--train-subset-size", type=int, default=0)
+    parser.add_argument("--train-block-size", type=int, default=100)
     parser.add_argument("--train-cycle-epoch", type=int, default=0)
     parser.add_argument("--train-cycle-drop-last", action="store_true")
     parser.add_argument("--warmup-steps", type=int, default=2)
@@ -186,7 +187,7 @@ def main():
         )
     if args.mode in ("block_shuffle", "interleave"):
         loader_kwargs.update(
-            train_block_size=100,
+            train_block_size=args.train_block_size,
         )
     if args.mode == "interleave":
         loader_kwargs.update(
@@ -235,7 +236,8 @@ def main():
     if trainer.is_global_zero:
         print(
             f"DDP_BENCH_START mode={args.mode} end={args.end} train_size={args.train_size} "
-            f"train_subset_size={args.train_subset_size} train_cycle_epoch={args.train_cycle_epoch} "
+            f"train_subset_size={args.train_subset_size} train_block_size={args.train_block_size} "
+            f"train_cycle_epoch={args.train_cycle_epoch} "
             f"train_cycle_drop_last={args.train_cycle_drop_last} "
             f"batch_size={args.batch_size} warmup_steps={args.warmup_steps} measure_steps={args.measure_steps} "
             f"num_workers={args.num_workers} prefetch_factor={args.prefetch_factor} "

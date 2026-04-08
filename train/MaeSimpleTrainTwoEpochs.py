@@ -10,7 +10,7 @@ from lightning.pytorch import seed_everything
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
-from models.MAE import MaskedAutoencoderViT
+from models.MAESimple import MaskedAutoencoderViT
 from utils.DataProcessing import CreateMultimodalDataLoadersIter
 
 TRAIN_NUM_NODES = 4
@@ -28,8 +28,8 @@ if __name__ == "__main__":
             torch.backends.cuda.enable_mem_efficient_sdp(True)
             print("Enabled memory-efficient SDPA")
 
-    total_target_epochs = 200
-    checkpoint_dir = os.path.join(os.environ["SCRATCH"], "DESIMAE/ProductionCheckpointsFinal")
+    total_target_epochs = 180
+    checkpoint_dir = os.path.join(os.environ["SCRATCH"], "DESIMAE/ProductionCheckpointsSimple")
     resume_ckpt_path = os.path.join(checkpoint_dir, "last.ckpt")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -37,14 +37,14 @@ if __name__ == "__main__":
         ckpt_meta = torch.load(resume_ckpt_path, map_location="cpu")
         last_finished_epoch = int(ckpt_meta.get("epoch", -1))
         next_epoch = last_finished_epoch + 1
-        run_max_epochs = min(total_target_epochs, last_finished_epoch + 2)
+        run_max_epochs = min(total_target_epochs, last_finished_epoch + 3)
         ckpt_path = resume_ckpt_path
         print(f"Resuming from {resume_ckpt_path} (last_finished_epoch={last_finished_epoch})")
     else:
         next_epoch = 0
-        run_max_epochs = 1
+        run_max_epochs = 2
         ckpt_path = None
-        print("No previous checkpoint found. Starting from scratch for epoch 0.")
+        print("No previous checkpoint found. Starting from scratch for epochs 0-1.")
 
     # Keep the highest-throughput dataloader settings validated on 4x4 GPUs.
     loader_cfg = {
