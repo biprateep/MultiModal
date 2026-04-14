@@ -37,14 +37,14 @@ if __name__ == "__main__":
         ckpt_meta = torch.load(resume_ckpt_path, map_location="cpu")
         last_finished_epoch = int(ckpt_meta.get("epoch", -1))
         next_epoch = last_finished_epoch + 1
-        run_max_epochs = min(total_target_epochs, last_finished_epoch + 3)
+        run_max_epochs = min(total_target_epochs, last_finished_epoch + 2)
         ckpt_path = resume_ckpt_path
         print(f"Resuming from {resume_ckpt_path} (last_finished_epoch={last_finished_epoch})")
     else:
         next_epoch = 0
-        run_max_epochs = 2
+        run_max_epochs = 1
         ckpt_path = None
-        print("No previous checkpoint found. Starting from scratch for epochs 0-1.")
+        print("No previous checkpoint found. Starting from scratch for epoch 0.")
 
     # Keep the highest-throughput dataloader settings validated on 4x4 GPUs.
     loader_cfg = {

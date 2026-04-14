@@ -10,6 +10,7 @@ def forward_loss(
     img,
     weig_img,
     error_img,
+    spec_mask=None,
     img_mask=None,
     *,
     img_patch,
@@ -29,6 +30,22 @@ def forward_loss(
     sq_error = (x_hat - x).pow(2)
     base_pixel = 0.5 * (sq_error / denom + regularizer * torch.log(denom.clamp_min(eps)))
     loss = base_pixel.mean()
+
+    if lam_img_sigma_masked > 0.0 and spec_mask is not None:
+        if spec_mask.dim() == 1:
+            spec_mask = spec_mask.unsqueeze(0).expand(x_hat.size(0), -1)
+
+        target_len = log_s.shape[-1]
+        if spec_mask.shape[-1] < target_len:
+            spec_mask = torch.nn.functional.pad(spec_mask, (0, target_len - spec_mask.shape[-1]))
+        elif spec_mask.shape[-1] > target_len:
+            spec_mask = spec_mask[..., :target_len]
+
+        spec_mask = spec_mask.to(device=log_s.device, dtype=log_s.dtype)
+        sigma_spec = torch.exp(log_s).clamp_min(eps)
+        denom_spec = spec_mask.sum().clamp_min(1.0)
+        spec_sigma_penalty = (sigma_spec.pow(2) * spec_mask).sum() / denom_spec
+        loss = loss + lam_img_sigma_masked * spec_sigma_penalty
 
     B = img.size(0)
     P = img_patch

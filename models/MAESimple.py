@@ -536,6 +536,21 @@ class MaskedAutoencoderViT(pl.LightningModule):
         pred, error, pred_img, error_img = self.forward_decoder(latent, token_mask, z, xy_pix)
 
         offset = self.left_patches * self.patch_size
+        spec_mask = token_mask[:-self.num_patchesimg].long()
+        if spec_mask.numel() == self.num_patches1d + 1:
+            spec_mask = spec_mask[1:]
+
+        if self.left_patches > 0 or self.right_patches > 0:
+            spec_mask = torch.cat(
+                [
+                    torch.zeros(self.left_patches, device=spec_mask.device, dtype=spec_mask.dtype),
+                    spec_mask,
+                    torch.zeros(self.right_patches, device=spec_mask.device, dtype=spec_mask.dtype),
+                ],
+                dim=0,
+            )
+
+        spec_mask = spec_mask.repeat_interleave(self.patch_size)[offset:offset + self.spec_dim]
         spec_loss, img_loss, total_loss = forward_loss(
             pred[:, offset:offset + self.spec_dim],
             spec,
@@ -545,6 +560,7 @@ class MaskedAutoencoderViT(pl.LightningModule):
             img,
             weig_img,
             error_img,
+            spec_mask=spec_mask,
             img_mask=token_mask[-self.num_patchesimg:].long(),
             img_patch=self.img_patch,
             num_img_channels=self.num_img_channels,
