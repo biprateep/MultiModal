@@ -65,7 +65,7 @@ Key dependencies: `torch`, `pytorch_lightning`, `timm`, `wandb`, `zarr`, `astrop
 
 ## Reproducing Figure 2
 
-### Step 1: Train the model
+### Step 1: Train the model (optional)
 
 From `train/`, launch the batch job:
 
@@ -87,6 +87,7 @@ Training logs to Weights & Biases (project: `Production`).
 
 ### Step 2: Generate H-alpha maps from a checkpoint
 
+Without redoing the pretraining, the current latest checkpoint is located at `/pscratch/sd/p/pzehao/DESIMAE/ProductionCheckpointsSimple/epoch=119-val_loss=-1.5850.ckpt`.
 Run the evaluation sweep to produce predicted H-alpha `.npy` files:
 
 ```bash
