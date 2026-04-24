@@ -7,6 +7,9 @@
 # Track Jupyter notebooks
 !*.ipynb
 
+# Track training bash scripts
+!*.sh
+
 # Track directories 
 !*/
 
