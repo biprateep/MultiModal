@@ -74,14 +74,6 @@ sbatch train.sh
 ```
 
 Note that one epoch takes just over an hour on the full 4-node setup.
-Alternatively, submit chained one-epoch interactive jobs on Perlmutter:
-
-```bash
-cd train
-./simple_chaininteractive.sh
-```
-
-This runs `MaeSimpleTrainOneEpoch.py` for 20 epochs per invocation, automatically resuming from the last checkpoint at `$SCRATCH/DESIMAE/ProductionCheckpointsSimple/`. Repeat until ~180 epochs. Each invocation requests 4 nodes (16 A100 GPUs) via `salloc`. **I was only doing this because of fair share.**
 
 Training logs to Weights & Biases (project: `Production`).
 
